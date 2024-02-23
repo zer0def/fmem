@@ -39,11 +39,11 @@
 # include <linux/bootmem.h>
 #else
 # include <linux/memblock.h>
-#endif
+#endif  // LINUX_VERSION_CODE < KERNEL_VERSION(4,20,0)
 
 #ifdef CONFIG_IA64
 # include <linux/efi.h>
-#endif
+#endif  // CONFIG_IA64
 
 // this is major number used for our new dumping device.
 // 341 should be in free range
@@ -153,7 +153,7 @@ static inline int uncached_access(struct file *file, unsigned long addr)
 	if (file->f_flags & O_SYNC)
 		return 1;
 	return addr >= __pa(high_memory);
-#endif
+#endif  // defined(CONFIG_IA64) || defined(CONFIG_MIPS)
 }
 
 /*
@@ -191,7 +191,7 @@ static ssize_t read_mem(struct file * file, char __user * buf,
 			read += sz;
 		}
 	}
-#endif
+#endif  // __ARCH_HAS_NO_PAGE_ZERO_MAPPED
 
 	while (count > 0) {
 		/*
@@ -272,7 +272,7 @@ static inline int private_mapping_ok(struct vm_area_struct *vma)
 {
 	return 1;
 }
-#endif
+#endif  // CONFIG_MMU
 
 static int mmap_mem(struct file * file, struct vm_area_struct * vma)
 {
@@ -291,11 +291,16 @@ static loff_t memory_lseek(struct file * file, loff_t offset, int orig)
 {
 	loff_t ret;
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,7,0)
-	mutex_lock(&file->f_path.dentry->d_inode->i_mutex);
+//Older kernels (<20) uses f_dentry instead of f_path.dentry
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
+	mutex_lock(&file->f_dentry->d_inode->i_mutex);
 #else
+# if LINUX_VERSION_CODE < KERNEL_VERSION(4,7,0)
+	mutex_lock(&file->f_path.dentry->d_inode->i_mutex);
+# else
 	inode_lock(file->f_path.dentry->d_inode);
-#endif
+# endif  // LINUX_VERSION_CODE < KERNEL_VERSION(4,7,0)
+#endif  // LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
 
 	switch (orig) {
 		case 0:
@@ -311,11 +316,16 @@ static loff_t memory_lseek(struct file * file, loff_t offset, int orig)
 		default:
 			ret = -EINVAL;
 	}
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4,7,0)
-	mutex_unlock(&file->f_path.dentry->d_inode->i_mutex);
+//Older kernels (<20) uses f_dentry instead of f_path.dentry
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
+	mutex_unlock(&file->f_dentry->d_inode->i_mutex);
 #else
+# if LINUX_VERSION_CODE < KERNEL_VERSION(4,7,0)
+	mutex_unlock(&file->f_path.dentry->d_inode->i_mutex);
+# else
 	inode_unlock(file->f_path.dentry->d_inode);
-#endif
+# endif  // LINUX_VERSION_CODE < KERNEL_VERSION(4,7,0)
+#endif  // LINUX_VERSION_CODE < KERNEL_VERSION(2,6,20)
 	return ret;
 }
 
@@ -378,9 +388,17 @@ static int __init chr_dev_init(void)
 	if (register_chrdev(FMEM_MAJOR,"fmem",&memory_fops))
 		printk("unable to get major %d for memory devs\n", FMEM_MAJOR);
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6,4,0)
 	mem_class = class_create(THIS_MODULE, "fmem");
+#else
+	mem_class = class_create("fmem");
+#endif  // LINUX_VERSION_CODE < KERNEL_VERSION(6,4,0)
 	for (i = 0; i < ARRAY_SIZE(devlist); i++) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,26)
+		device_create(mem_class, NULL, MKDEV(FMEM_MAJOR, devlist[i].minor), devlist[i].name);
+#else
 		device_create(mem_class, NULL, MKDEV(FMEM_MAJOR, devlist[i].minor), NULL, devlist[i].name);
+#endif  // LINUX_VERSION_CODE < KERNEL_VERSION(2,6,26)
 	}
 	return 0;
 }
@@ -397,7 +415,7 @@ static int __init chr_dev_init(void)
 
 //----------------------------------------------------------------------------------
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,7,0))
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,7,0)
 
 static int kallsyms_kprobe_handler(struct kprobe *p_ri, struct pt_regs *p_regs)
 {
@@ -419,11 +437,11 @@ static int kallsyms_on_each_symbol_callback(void *data, const char *name, struct
 	return 0;
 }
 
-#endif
+#endif  // LINUX_VERSION_CODE >= KERNEL_VERSION(5,7,0)
 
 int find_symbols(void)
 {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5,7,0))
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,7,0)
 	/* version 1:
 	This works on kernel 5.7.0 and newer where kallsyms_lookup_name()
 	and kallsyms_on_each_symbol() are not exported.
@@ -445,8 +463,8 @@ int find_symbols(void)
 #ifdef CONFIG_THUMB2_KERNEL
 	if (p_kallsyms_lookup_name)
 		p_kallsyms_lookup_name |= 1; /* set bit 0 in address for thumb mode */
-#endif
-#endif
+#endif  // CONFIG_THUMB2_KERNEL
+#endif  // CONFIG_ARM
 	unregister_kprobe(&kp);
 
 	addr = p_kallsyms_lookup_name("page_is_ram");
@@ -460,7 +478,7 @@ int find_symbols(void)
 	*/
 	kallsyms_on_each_symbol(kallsyms_on_each_symbol_callback, NULL);
 
-#endif
+#endif  // LINUX_VERSION_CODE >= KERNEL_VERSION(5,7,0)
 
 	/* version 3:
 	Take address from command line passed there by grepping /proc/kallsyms.
@@ -474,7 +492,12 @@ int find_symbols(void)
 }
 
 /// Function executed upon loading module
-int __init init_module (void)
+static int __init
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,4,0)
+init_module (void)
+#else
+fmem_mod_init (void)
+#endif  // LINUX_VERSION_CODE < KERNEL_VERSION(2,4,0)
 {
 	dbgprint("init");
 	find_symbols();
@@ -485,7 +508,12 @@ int __init init_module (void)
 }
 
 /// Function executed when unloading module
-void __exit cleanup_module (void)
+static void __exit
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,4,0)
+cleanup_module (void)
+#else
+fmem_mod_exit (void)
+#endif  // LINUX_VERSION_CODE < KERNEL_VERSION(2,4,0)
 {
 	dbgprint("destroying fmem device");
 
@@ -496,3 +524,8 @@ void __exit cleanup_module (void)
 
 	dbgprint("exit");
 }
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(2,4,0)
+module_init(fmem_mod_init);
+module_exit(fmem_mod_exit);
+#endif  // LINUX_VERSION_CODE >= KERNEL_VERSION(2,4,0)
